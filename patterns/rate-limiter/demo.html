@@ -73,11 +73,18 @@
     .packet.block { background: var(--red); color: var(--red); }
     .packet.res { background: var(--amber); color: var(--amber); }
     .packet.go { opacity: 1; animation: travel 900ms linear forwards; }
+    .packet.reverse.go { animation: travelReverse 900ms linear forwards; }
     @keyframes travel {
       from { left: 0; opacity: 0 }
       10% {opacity: 1}
       90% {opacity: 1}
       to {left: 100%;opacity: 0}
+    }
+    @keyframes travelReverse {
+      from { left: 100%; opacity: 0 }
+      10% {opacity: 1}
+      90% {opacity: 1}
+      to {left: 0;opacity: 0}
     }
     .controls { display: grid; grid-template-columns:1.1fr 1fr 1fr auto; gap: 14px; margin-top: 24px; }
     .control { padding: 15px 16px; border: 1px solid #2b3a56; border-radius: 14px; background: #101a2d; }
@@ -126,11 +133,18 @@
       .link-label.bottom { left: 16px;top: auto;bottom: 0; }
       .packet { top: 0;left: 50%; }
       .packet.go { animation: travelDown 650ms linear forwards; }
+      .packet.reverse.go { animation: travelUp 650ms linear forwards; }
       @keyframes travelDown {
         from {top: 0;opacity: 0}
         10% {opacity: 1}
         90% {opacity: 1}
         to {top: 100%;opacity: 0}
+      }
+      @keyframes travelUp {
+        from {top: 100%;opacity: 0}
+        10% {opacity: 1}
+        90% {opacity: 1}
+        to {top: 0;opacity: 0}
       }
       .controls { grid-template-columns:1fr 1fr; }
       .actions { flex-direction: row; grid-column: span 2; }
@@ -182,7 +196,7 @@
           <div class="node-stat"><span>Responses received</span><b id="clientReceived">0</b></div>
         </article>
         <div class="link" id="link1">
-          <span class="link-label">HTTP request</span><span class="packet req" id="packet1"></span></div>
+          <span class="link-label">HTTP request</span><span class="link-label bottom">Response</span><span class="packet req" id="packet1"></span><span class="packet res reverse" id="response1"></span></div>
         <article class="node limiter">
           <div class="node-head">
             <div class="glyph">🛡️</div>
@@ -192,7 +206,7 @@
           <div class="node-stat"><span>Tokens available</span><b id="tokens">5 / 5</b></div>
           <div class="node-stat"><span>Decision</span><b id="decision">Waiting</b></div>
         </article>
-        <div class="link" id="link2"><span class="link-label">Allowed request</span><span class="link-label bottom">429 if limited</span><span class="packet ok" id="packet2"></span>
+        <div class="link" id="link2"><span class="link-label">Allowed request</span><span class="link-label bottom">Response / 429</span><span class="packet ok" id="packet2"></span><span class="packet res reverse" id="response2"></span>
         </div>
         <article class="node service">
           <div class="node-head">
@@ -305,7 +319,7 @@
 
       function animate(id, cls, duration = 850) {
         const el = $(id);
-        el.className = `packet ${cls}`;
+        el.className = `packet ${cls}${id.startsWith('response') ? ' reverse' : ''}`;
         // Force animation restart when packets are sent rapidly.
         void el.offsetWidth;
         el.classList.add('go');
@@ -343,7 +357,8 @@
             state.received++;
             $('serviceStatus').textContent = 'Healthy';
             $('serviceStatus').style.color = '';
-            animate('packet2', 'res');
+            animate('response2', 'res');
+            setTimeout(() => animate('response1', 'res', 850), 180);
             render();
           }, 520);
           addLog(true, id);
@@ -353,6 +368,7 @@
           $('decision').textContent = 'Throttled';
           $('decision').style.color = 'var(--red)';
           animate('packet2', 'block');
+          animate('response1', 'res');
           setTimeout(() => {
             state.received++;
             render();
