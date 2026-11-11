@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Circuit breaker demo</title>
+  <style>
+    :root {--bg: #eef1f4;--card: #fff;--ink: #1c2530;--mute: #5d6b7a;--line: #cdd5dd;--ok: #1f8a5b;--bad: #c93a3a;--warn: #b7791f;--okbg: #e2f4ea;--badbg: #fbe5e5;--warnbg: #fbf0d9;
+      box-sizing: border-box;padding-top: env(safe-area-inset-top, 0px);padding-bottom: env(safe-area-inset-bottom, 0px)}
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {--bg: #12171d;--card: #1a222b;--ink: #e6ebf0;--mute: #93a1b0;--line: #33404d;--ok: #4cc38a;--bad: #ef6b6b;--warn: #e5a93f;--okbg: #14342a;--badbg: #3a1d1f;--warnbg: #3a2f16;color-scheme: dark}
+    }
+    :root[data-theme="dark"] {--bg: #12171d;--card: #1a222b;--ink: #e6ebf0;--mute: #93a1b0;--line: #33404d;--ok: #4cc38a;--bad: #ef6b6b;--warn: #e5a93f;--okbg: #14342a;--badbg: #3a1d1f;--warnbg: #3a2f16;color-scheme: dark}
+    html {scroll-padding-top: env(safe-area-inset-top, 0px)}
+    * {box-sizing: border-box}
+    body {margin: 0;background: var(--bg);color: var(--ink);font: 16px/1.5 "Avenir Next", "Segoe UI", system-ui, sans-serif}
+    main {max-width: 980px;margin: 0 auto;padding: 28px 18px 40px}
+    h1 {font-size: 1.5rem;margin: 0 0 4px}
+    p.lead {margin: 0 0 22px;color: var(--mute);max-width: 62ch}
+    .flow {display: grid;grid-template-columns:1fr 90px 1fr 90px 1fr;align-items: center}
+    .box {background: var(--card);border: 2px solid var(--line);border-radius: 12px;padding: 16px;min-height: 170px;display: flex;flex-direction: column;gap: 8px;transition: border-color .25s, background .25s}
+    .box h2 {font-size: 1.05rem;margin: 0}
+    .box .sub {color: var(--mute);font-size: .88rem;margin: 0}
+    .badge {display: inline-block;align-self: flex-start;padding: 3px 12px;border-radius: 99px;font-weight: 700;font-size: .9rem;transition: all .25s}
+    .ok {color: var(--ok);background: var(--okbg)}
+    .bad {color: var(--bad);background: var(--badbg)}
+    .warn {color: var(--warn);background: var(--warnbg)}
+    #cb.ok {border-color: var(--ok)}
+    #cb.bad {border-color: var(--bad)}
+    #cb.warn {border-color: var(--warn)}
+    #svc.bad {border-color: var(--bad)}
+    .track {position: relative;height: 100%;min-height: 4px}
+    .track::before {content: "";position: absolute;left: 0;right: 0;top: 50%;border-top: 2px dashed var(--line)}
+    .pkt {position: absolute;top: 50%;left: 0;width: 14px;height: 14px;margin: -7px 0 0 -7px;border-radius: 50%;background: var(--ok)}
+    .pkt.bad {background: var(--bad)}
+    .pkt.warn {background: var(--warn)}
+    button {font: inherit;font-weight: 700;border: 0;border-radius: 8px;padding: 9px 14px;cursor: pointer;color: #fff;background: var(--bad);margin-top: auto}
+    button.recover {background: var(--ok)}
+    button:focus-visible {outline: 3px solid var(--warn);outline-offset: 2px}
+    .meter {display: flex;gap: 6px;margin-top: 2px}
+    .meter i {width: 22px;height: 8px;border-radius: 4px;background: var(--line);transition: background .2s}
+    .meter i.on {background: var(--bad)}
+    .stats {display: flex;gap: 18px;margin: 18px 0 8px;color: var(--mute);font-size: .92rem;flex-wrap: wrap}
+    .stats b {color: var(--ink)}
+    #log {background: var(--card);border: 1px solid var(--line);border-radius: 10px;padding: 10px 14px;height: 190px;overflow: auto;font: 13px/1.6 ui-monospace, Menlo, Consolas, monospace;margin: 0;list-style: none}
+    #log li.bad {color: var(--bad);background: none}
+    #log li.warn {color: var(--warn);background: none}
+    #log li.ok {color: var(--ok);background: none}
+    @media (max-width: 720px) {
+      .flow {grid-template-columns:1fr;grid-template-rows:auto 60px auto 60px auto}
+      .track {min-height: 60px}
+      .track::before {left: 50%;right: auto;top: 0;bottom: 0;border-top: 0;border-left: 2px dashed var(--line)}
+      .pkt {left: 50%;top: 0}
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * {transition: none !important}
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Circuit breaker pattern</h1>
+    <p class="lead">The calling service sends a request every second. Press Degrade on the called service and watch the
+                    breaker stop the traffic, wait, then probe to see if it has recovered.</p>
+
+    <div class="flow">
+      <section class="box" id="caller">
+        <h2>Calling service</h2>
+        <p class="sub">Sends one request per second</p>
+        <span class="badge ok" id="callerRes">Waiting</span>
+        <p class="sub" id="callerNote">Last response: none yet</p>
+      </section>
+      <div class="track" id="t1"></div>
+      <section class="box ok" id="cb">
+        <h2>Circuit breaker</h2>
+        <span class="badge ok" id="cbState">Closed</span>
+        <p class="sub" id="cbNote">Requests pass through</p>
+        <div class="meter" id="meter" aria-label="Failure count"><i></i><i></i><i></i></div>
+      </section>
+      <div class="track" id="t2"></div>
+      <section class="box" id="svc">
+        <h2>Called service</h2>
+        <span class="badge ok" id="svcState">Healthy</span>
+        <p class="sub" id="svcNote">Answers every request</p>
+        <button id="toggle">Degrade</button>
+      </section>
+    </div>
+
+    <div class="stats">
+      <span>Requests sent: <b id="sent">0</b></span>
+      <span>Reached the service: <b id="reached">0</b></span>
+      <span>Blocked by breaker: <b id="blocked">0</b></span>
+    </div>
+    <ul id="log" aria-live="polite"></ul>
+  </main>
+
+  <script>
+    const THRESHOLD = 3, OPEN_MS = 6000, TICK_MS = 1200;
+    let degraded = false, state = "closed", failures = 0, openUntil = 0;
+    let sent = 0, reached = 0, blocked = 0, inFlight = false;
+    const $ = id => document.getElementById(id);
+    const vertical = () => matchMedia("(max-width:720px)").matches;
+
+    function log(msg, cls) {
+      const li = document.createElement("li");
+      li.className = cls || "";
+      li.textContent = new Date().toLocaleTimeString([], {hour12: false}) + "  " + msg;
+      const l = $("log");
+      l.prepend(li);
+      while (l.children.length > 60) l.lastChild.remove();
+    }
+
+    function packet(trackId, cls, forward, ms) {
+      return new Promise(res => {
+        const t = $(trackId), p = document.createElement("span");
+        p.className = "pkt " + (cls || "");
+        t.appendChild(p);
+        const len = vertical() ? t.clientHeight : t.clientWidth;
+        const a = forward ? 0 : len, b = forward ? len : 0;
+        const f = vertical() ? [{transform: `translateY(${a}px)`}, {transform: `translateY(${b}px)`}]
+          : [{transform: `translateX(${a}px)`}, {transform: `translateX(${b}px)`}];
+        const anim = p.animate(f, {duration: ms, easing: "ease-in-out", fill: "forwards"});
+        anim.onfinish = () => {
+          p.remove();
+          res();
+        };
+      });
+    }
+
+    function setBreaker(s) {
+      state = s;
+      const cb = $("cb"), b = $("cbState"), n = $("cbNote");
+      const map = {
+        closed: ["ok", "Closed", "Requests pass through"],
+        open: ["bad", "Open", "Blocking calls, returning fallback"],
+        half: ["warn", "Half-open", "Letting one probe request through"]
+      };
+      const [c, label, note] = map[s];
+      cb.className = "box " + c;
+      b.className = "badge " + c;
+      b.textContent = label;
+      n.textContent = note;
+    }
+
+    function setMeter() {
+      [...$("meter").children].forEach((el, i) => el.classList.toggle("on", i < failures));
+    }
+
+    function stats() {
+      $("sent").textContent = sent;
+      $("reached").textContent = reached;
+      $("blocked").textContent = blocked;
+    }
+
+    function callerResult(text, cls, note) {
+      const r = $("callerRes");
+      r.textContent = text;
+      r.className = "badge " + cls;
+      $("callerNote").textContent = note;
+    }
+
+    async function callService(probe) {
+      await packet("t2", degraded ? "bad" : "ok", true, 450);
+      reached++;
+      stats();
+      if (degraded) {
+        await packet("t2", "bad", false, 450);
+        return false;
+      }
+      await packet("t2", "ok", false, 450);
+      return true;
+    }
+
+    async function tick() {
+      if (inFlight) return;
+      inFlight = true;
+      sent++;
+      stats();
+      await packet("t1", "ok", true, 450);
+
+      if (state === "open" && Date.now() >= openUntil) {
+        setBreaker("half");
+        log("Cool-down over. Breaker is half-open.", "warn");
+      }
+
+      if (state === "open") {
+        blocked++;
+        stats();
+        log("Request blocked. Fallback returned, service not called.", "warn");
+        await packet("t1", "warn", false, 450);
+        callerResult("Fallback", "warn", "Last response: cached fallback");
+      }
+      else {
+        const probe = state === "half";
+        if (probe) log("Probe request sent to the service.", "warn");
+        const okRes = await callService(probe);
+        if (okRes) {
+          failures = 0;
+          setMeter();
+          if (probe) {
+            setBreaker("closed");
+            log("Probe succeeded. Breaker closed.", "ok");
+          }
+          else log("Request succeeded.", "ok");
+          await packet("t1", "ok", false, 450);
+          callerResult("Success", "ok", "Last response: real data");
+        }
+        else {
+          if (probe) {
+            openUntil = Date.now() + OPEN_MS;
+            setBreaker("open");
+            log("Probe failed. Breaker open again for " + OPEN_MS / 1000 + "s.", "bad");
+          }
+          else {
+            failures++;
+            setMeter();
+            log("Request failed (" + failures + "/" + THRESHOLD + ").", "bad");
+            if (failures >= THRESHOLD) {
+              openUntil = Date.now() + OPEN_MS;
+              setBreaker("open");
+              log("Failure threshold reached. Breaker open for " + OPEN_MS / 1000 + "s.", "bad");
+            }
+          }
+          await packet("t1", "bad", false, 450);
+          callerResult("Error", "bad", "Last response: error from service");
+        }
+      }
+      inFlight = false;
+    }
+
+    $("toggle").addEventListener("click", () => {
+      degraded = !degraded;
+      const sv = $("svc"), b = $("svcState"), btn = $("toggle");
+      sv.className = "box" + (degraded ? " bad" : "");
+      b.className = "badge " + (degraded ? "bad" : "ok");
+      b.textContent = degraded ? "Degraded" : "Healthy";
+      $("svcNote").textContent = degraded ? "Every request fails" : "Answers every request";
+      btn.textContent = degraded ? "Recover" : "Degrade";
+      btn.className = degraded ? "recover" : "";
+      log(degraded ? "Called service is now degraded." : "Called service recovered.", degraded ? "bad" : "ok");
+    });
+
+    setInterval(() => {
+      if (state === "open") {
+        const s = Math.max(0, Math.ceil((openUntil - Date.now()) / 1000));
+        $("cbNote").textContent = "Blocking calls, probe in " + s + "s";
+      }
+    }, 250);
+    setInterval(tick, TICK_MS);
+    log("Demo started. All services healthy.", "ok");
+  </script>
+</body>
+</html>
