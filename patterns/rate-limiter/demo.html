@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rate Limiter — Interactive Demo</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2d;
+      --panel-2: #18233a;
+      --line: #33415f;
+      --muted: #91a0bb;
+      --text: #eef4ff;
+      --cyan: #56d8f2;
+      --green: #5ee0a0;
+      --amber: #ffca68;
+      --red: #ff7185;
+      --purple: #b6a0ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--text);
+      background: radial-gradient(ellipse at 50% -15%, #1b2a4a 0, var(--bg) 58%);
+      font: 15px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .wrap { width: min(1120px, calc(100% - 36px)); margin: 0 auto; padding: 38px 0 50px; }
+    header { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 26px; }
+    .eyebrow { color: var(--cyan); font-size: 11px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+    h1 { margin: 7px 0 7px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.04em; line-height: 1.08; }
+    .subtitle { color: var(--muted); max-width: 650px; }
+    .live { display: flex; align-items: center; gap: 8px; border: 1px solid #294d4b; color: #9bf0c6; background: #102b2b; border-radius: 999px; padding: 7px 11px; font-size: 12px; white-space: nowrap; }
+    .live i { width: 7px;height: 7px;border-radius: 50%;background: var(--green);box-shadow: 0 0 12px var(--green); }
+    .stage {
+      position: relative; overflow: hidden; border: 1px solid #283653; border-radius: 22px;
+      background: linear-gradient(145deg, rgba(23, 34, 57, .94), rgba(13, 21, 39, .96));
+      padding: 30px 26px 25px; box-shadow: 0 22px 70px #0005;
+    }
+    .stage-top { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-bottom: 26px; }
+    .stage-top strong { font-size: 13px; letter-spacing: .02em; }
+    .legend { display: flex; gap: 15px; flex-wrap: wrap; color: var(--muted); font-size: 11px; }
+    .legend span { display: flex; align-items: center; gap: 6px; }
+    .dot { width: 7px;height: 7px;border-radius: 50%;display: inline-block; }
+    .flow { display: grid; grid-template-columns:1fr 150px 1fr 150px 1fr; align-items: center; min-height: 230px; }
+    .node {
+      position: relative; z-index: 2; min-height: 174px; padding: 19px 18px;
+      border: 1px solid #344463; border-radius: 16px; background: linear-gradient(160deg, #1b2943, #121c31);
+      box-shadow: 0 12px 30px #0003;
+    }
+    .node.client { border-top: 3px solid var(--cyan); }
+    .node.limiter { border-top: 3px solid var(--purple); }
+    .node.service { border-top: 3px solid var(--green); }
+    .node-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .glyph { display: grid; place-items: center; width: 34px;height: 34px;border-radius: 10px;background: #263a58;font-size: 17px; }
+    .node h2 { font-size: 15px; margin: 0; }
+    .node small { color: var(--muted); font-size: 11px; }
+    .node p { color: #aebbd1; font-size: 12px; margin: 0 0 13px; min-height: 34px; }
+    .node-stat { display: flex; justify-content: space-between; border-top: 1px solid #2b3a56; padding-top: 10px; font-size: 11px; color: var(--muted); }
+    .node-stat b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .link { position: relative; height: 2px; background: #34435f; }
+    .link:before, .link:after { content: "";position: absolute;top: 50%;width: 7px;height: 7px;border-top: 2px solid #657695;border-right: 2px solid #657695; }
+    .link:before { left: 0; transform: translateY(-50%) rotate(45deg); }
+    .link:after { right: 0; transform: translateY(-50%) rotate(45deg); }
+    .link-label { position: absolute; left: 50%; transform: translateX(-50%); top: -25px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .link-label.bottom { top: 11px; }
+    .packet {
+      position: absolute; top: 50%; left: 0; width: 10px;height: 10px;border-radius: 50%;
+      transform: translate(-50%, -50%); opacity: 0; box-shadow: 0 0 12px currentColor;
+    }
+    .packet.req { background: var(--cyan); color: var(--cyan); }
+    .packet.ok { background: var(--green); color: var(--green); }
+    .packet.block { background: var(--red); color: var(--red); }
+    .packet.res { background: var(--amber); color: var(--amber); }
+    .packet.go { opacity: 1; animation: travel 900ms linear forwards; }
+    @keyframes travel {
+      from { left: 0; opacity: 0 }
+      10% {opacity: 1}
+      90% {opacity: 1}
+      to {left: 100%;opacity: 0}
+    }
+    .controls { display: grid; grid-template-columns:1.1fr 1fr 1fr auto; gap: 14px; margin-top: 24px; }
+    .control { padding: 15px 16px; border: 1px solid #2b3a56; border-radius: 14px; background: #101a2d; }
+    .control label { display: flex; justify-content: space-between; color: #b9c6dc; font-size: 11px; font-weight: 700; margin-bottom: 9px; }
+    .control output { color: var(--cyan); font-variant-numeric: tabular-nums; }
+    input[type=range] { width: 100%; accent-color: var(--cyan); cursor: pointer; }
+    .hint { color: #7f90ad; font-size: 10px; margin-top: 5px; }
+    .actions { display: flex; flex-direction: column; gap: 8px; justify-content: center; }
+    button { border: 0; border-radius: 10px; padding: 11px 15px; color: #07131e; font-weight: 800; font-size: 12px; cursor: pointer; transition: transform .15s, filter .15s; white-space: nowrap; }
+    button:hover { filter: brightness(1.1); transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    button.primary { background: var(--cyan); }
+    button.secondary { color: #d9e4f6; background: #263653; border: 1px solid #3a4d70; }
+    button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+    .lower { display: grid; grid-template-columns:1.15fr .85fr; gap: 16px; margin-top: 17px; }
+    .panel { border: 1px solid #283653; border-radius: 16px; background: rgba(17, 26, 45, .88); padding: 17px 18px; }
+    .panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 10px; }
+    .panel-title h3 { margin: 0; font-size: 13px; }
+    .panel-title span { color: var(--muted); font-size: 10px; }
+    .metrics { display: grid; grid-template-columns:repeat(4, 1fr); gap: 9px; }
+    .metric { padding: 11px 12px; border-radius: 11px; background: #19253c; }
+    .metric label { display: block; color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+    .metric strong { font-size: 22px; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+    .metric strong.good { color: var(--green); }
+    .metric strong.bad { color: var(--red); }
+    .meter-head { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin: 15px 0 7px; }
+    .meter { height: 8px; background: #263550; border-radius: 99px; overflow: hidden; }
+    .meter > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--green), var(--amber)); border-radius: 99px; transition: width .2s; }
+    .log { height: 158px; overflow: auto; display: flex; flex-direction: column; gap: 7px; padding-right: 4px; }
+    .entry { display: grid; grid-template-columns:56px 1fr auto; align-items: center; gap: 8px; font-size: 10px; color: #aebbd1; padding: 7px 8px; border-radius: 8px; background: #19253b; }
+    .entry .time { color: #7587a5; font-variant-numeric: tabular-nums; }
+    .entry b { font-weight: 700; color: var(--text); }
+    .tag { border-radius: 5px; padding: 3px 6px; font-size: 9px; font-weight: 800; letter-spacing: .04em; }
+    .tag.allowed { color: #83edb8;background: #163c35; }
+    .tag.rejected { color: #ff9aa7;background: #482633; }
+    .empty { color: #71819d; text-align: center; padding: 50px 0; font-size: 11px; }
+    .explain { color: var(--muted); font-size: 11px; margin: 15px 2px 0; }
+    .explain b { color: #dce7fa; }
+    @media (max-width: 850px) {
+      .flow { grid-template-columns:1fr; gap: 14px; }
+      .node { min-height: 0; }
+      .link { width: 2px;height: 44px;justify-self: center; }
+      .link:before { left: 50%;top: 0;transform: translate(-50%, 0) rotate(135deg); }
+      .link:after { left: 50%;right: auto;top: auto;bottom: 0;transform: translate(-50%, 0) rotate(45deg); }
+      .link-label { left: 16px;top: 50%;transform: translateY(-50%); }
+      .link-label.bottom { left: 16px;top: auto;bottom: 0; }
+      .packet { top: 0;left: 50%; }
+      .packet.go { animation: travelDown 650ms linear forwards; }
+      @keyframes travelDown {
+        from {top: 0;opacity: 0}
+        10% {opacity: 1}
+        90% {opacity: 1}
+        to {top: 100%;opacity: 0}
+      }
+      .controls { grid-template-columns:1fr 1fr; }
+      .actions { flex-direction: row; grid-column: span 2; }
+      .actions button { flex: 1; }
+    }
+    @media (max-width: 600px) {
+      .wrap { width: min(100% - 22px, 1120px);padding-top: 25px; }
+      header { display: block; }
+      .live { display: inline-flex; margin-top: 12px; }
+      .stage { padding: 20px 14px; }
+      .stage-top { align-items: flex-start; flex-direction: column; }
+      .controls, .lower { grid-template-columns:1fr; }
+      .actions { grid-column: auto; }
+      .metrics { grid-template-columns:repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <div class="eyebrow">Systems design · interactive simulation</div>
+        <h1>Rate Limiter</h1>
+        <div class="subtitle">See how a rate limiter protects a service by controlling how many client requests are
+                              allowed through in a time window.
+        </div>
+      </div>
+      <div class="live"><i></i> Simulation ready</div>
+    </header>
+
+    <section class="stage">
+      <div class="stage-top">
+        <strong>REQUEST / RESPONSE PIPELINE</strong>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--cyan)"></i> Request</span>
+          <span><i class="dot" style="background:var(--green)"></i> Allowed</span>
+          <span><i class="dot" style="background:var(--red)"></i> Throttled</span>
+          <span><i class="dot" style="background:var(--amber)"></i> Response</span>
+        </div>
+      </div>
+      <div class="flow">
+        <article class="node client">
+          <div class="node-head">
+            <div class="glyph">💻</div>
+            <div><h2>Client</h2><small>Request source</small></div>
+          </div>
+          <p>Sends API requests to access a resource.</p>
+          <div class="node-stat"><span>Requests sent</span><b id="clientSent">0</b></div>
+          <div class="node-stat"><span>Responses received</span><b id="clientReceived">0</b></div>
+        </article>
+        <div class="link" id="link1">
+          <span class="link-label">HTTP request</span><span class="packet req" id="packet1"></span></div>
+        <article class="node limiter">
+          <div class="node-head">
+            <div class="glyph">🛡️</div>
+            <div><h2>Rate Limiter</h2><small>Token bucket algorithm</small></div>
+          </div>
+          <p>Checks the request budget before forwarding traffic.</p>
+          <div class="node-stat"><span>Tokens available</span><b id="tokens">5 / 5</b></div>
+          <div class="node-stat"><span>Decision</span><b id="decision">Waiting</b></div>
+        </article>
+        <div class="link" id="link2"><span class="link-label">Allowed request</span><span class="link-label bottom">429 if limited</span><span class="packet ok" id="packet2"></span>
+        </div>
+        <article class="node service">
+          <div class="node-head">
+            <div class="glyph">⚙️</div>
+            <div><h2>Service</h2><small>Protected API</small></div>
+          </div>
+          <p>Processes only requests approved by the limiter.</p>
+          <div class="node-stat"><span>Requests processed</span><b id="processed">0</b></div>
+          <div class="node-stat"><span>Service status</span><b id="serviceStatus">Healthy</b></div>
+        </article>
+      </div>
+
+      <div class="controls">
+        <div class="control">
+          <label for="rate">Refill rate
+            <output id="rateOut">2 tokens/sec</output>
+          </label>
+          <input id="rate" type="range" min="1" max="10" value="2">
+          <div class="hint">How quickly capacity is replenished</div>
+        </div>
+        <div class="control">
+          <label for="capacity">Bucket capacity
+            <output id="capacityOut">5 tokens</output>
+          </label>
+          <input id="capacity" type="range" min="1" max="20" value="5">
+          <div class="hint">Maximum burst of requests</div>
+        </div>
+        <div class="control">
+          <label for="interval">Auto traffic
+            <output id="intervalOut">1 req/sec</output>
+          </label>
+          <input id="interval" type="range" min="1" max="10" value="1">
+          <div class="hint">Requests generated per second</div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="send">＋ Send request</button>
+          <button class="secondary" id="auto">▶ Start auto</button>
+          <button class="secondary" id="reset">↺ Reset</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="lower">
+      <section class="panel">
+        <div class="panel-title"><h3>Live traffic metrics</h3>
+          <span>Since last reset</span></div>
+        <div class="metrics">
+          <div class="metric"><label>Total requests</label><strong id="total">0</strong></div>
+          <div class="metric"><label>Allowed</label><strong class="good" id="allowed">0</strong></div>
+          <div class="metric"><label>Throttled</label><strong class="bad" id="throttled">0</strong></div>
+          <div class="metric"><label>Pass rate</label><strong id="passRate">—</strong></div>
+        </div>
+        <div class="meter-head"><span>Bucket utilization</span><b id="bucketLabel">5 / 5 tokens</b></div>
+        <div class="meter">
+          <div id="bucketMeter"></div>
+        </div>
+        <p class="explain"><b>Try this:</b> Set auto traffic higher than the refill rate. The bucket drains, requests
+                                            are throttled, and the service stays protected. Increase capacity to allow a
+                                            larger burst.</p>
+      </section>
+      <section class="panel">
+        <div class="panel-title"><h3>Request activity</h3>
+          <span id="logCount">0 events</span></div>
+        <div class="log" id="log">
+          <div class="empty">No traffic yet. Send a request to begin.</div>
+        </div>
+      </section>
+    </div>
+  </div>
+  <script>
+    (() => {
+      const $ = id => document.getElementById(id);
+      const state = {
+        capacity: 5,
+        tokens: 5,
+        refill: 2,
+        autoRate: 1,
+        sent: 0,
+        allowed: 0,
+        throttled: 0,
+        processed: 0,
+        received: 0,
+        autoTimer: null,
+        lastRefill: performance.now(),
+        logCount: 0
+      };
+      const fmt = n => Number.isInteger(n) ? String(n) : n.toFixed(1);
+
+      function refill() {
+        const now = performance.now();
+        const elapsed = (now - state.lastRefill) / 1000;
+        state.tokens = Math.min(state.capacity, state.tokens + elapsed * state.refill);
+        state.lastRefill = now;
+      }
+
+      function render() {
+        const t = Math.floor(state.tokens * 10) / 10;
+        $('tokens').textContent = `${fmt(t)} / ${state.capacity}`;
+        $('clientSent').textContent = state.sent;
+        $('clientReceived').textContent = state.received;
+        $('processed').textContent = state.processed;
+        $('total').textContent = state.sent;
+        $('allowed').textContent = state.allowed;
+        $('throttled').textContent = state.throttled;
+        $('passRate').textContent = state.sent ? `${Math.round(state.allowed / state.sent * 100)}%` : '—';
+        $('bucketLabel').textContent = `${fmt(t)} / ${state.capacity} tokens`;
+        $('bucketMeter').style.width = `${Math.max(0, Math.min(100, t / state.capacity * 100))}%`;
+        $('logCount').textContent = `${state.logCount} events`;
+      }
+
+      function animate(id, cls, duration = 850) {
+        const el = $(id);
+        el.className = `packet ${cls}`;
+        // Force animation restart when packets are sent rapidly.
+        void el.offsetWidth;
+        el.classList.add('go');
+        setTimeout(() => el.classList.remove('go'), duration);
+      }
+
+      function addLog(allowed, id) {
+        const log = $('log');
+        const empty = log.querySelector('.empty');
+        if (empty) empty.remove();
+        const row = document.createElement('div');
+        row.className = 'entry';
+        const time = new Date().toLocaleTimeString([], {minute: '2-digit', second: '2-digit'});
+        row.innerHTML = `<span class="time">${time}</span><span><b>REQ-${String(id).padStart(3, '0')}</b> ${allowed ? 'Forwarded to service' : 'Limit exceeded · 429'}</span><span class="tag ${allowed ? 'allowed' : 'rejected'}">${allowed ? '200 OK' : '429'}</span>`;
+        log.prepend(row);
+        while (log.children.length > 30) log.lastElementChild.remove();
+        state.logCount++;
+      }
+
+      function request() {
+        refill();
+        state.sent++;
+        animate('packet1', 'req');
+        const id = state.sent;
+        if (state.tokens >= 1) {
+          state.tokens -= 1;
+          state.allowed++;
+          $('decision').textContent = 'Allowed';
+          $('decision').style.color = 'var(--green)';
+          animate('packet2', 'ok');
+          $('serviceStatus').textContent = 'Processing';
+          $('serviceStatus').style.color = 'var(--green)';
+          setTimeout(() => {
+            state.processed++;
+            state.received++;
+            $('serviceStatus').textContent = 'Healthy';
+            $('serviceStatus').style.color = '';
+            animate('packet2', 'res');
+            render();
+          }, 520);
+          addLog(true, id);
+        }
+        else {
+          state.throttled++;
+          $('decision').textContent = 'Throttled';
+          $('decision').style.color = 'var(--red)';
+          animate('packet2', 'block');
+          setTimeout(() => {
+            state.received++;
+            render();
+          }, 360);
+          addLog(false, id);
+        }
+        render();
+      }
+
+      function updateSettings() {
+        state.refill = Number($('rate').value);
+        state.capacity = Number($('capacity').value);
+        state.autoRate = Number($('interval').value);
+        state.tokens = Math.min(state.tokens, state.capacity);
+        $('rateOut').textContent = `${state.refill} tokens/sec`;
+        $('capacityOut').textContent = `${state.capacity} tokens`;
+        $('intervalOut').textContent = `${state.autoRate} req/sec`;
+        render();
+        if (state.autoTimer) startAuto();
+      }
+
+      function startAuto() {
+        if (state.autoTimer) clearInterval(state.autoTimer);
+        state.autoTimer = setInterval(request, 1000 / state.autoRate);
+        $('auto').textContent = 'Ⅱ Pause auto';
+        $('auto').classList.add('primary');
+        $('auto').classList.remove('secondary');
+      }
+
+      function stopAuto() {
+        if (state.autoTimer) clearInterval(state.autoTimer);
+        state.autoTimer = null;
+        $('auto').textContent = '▶ Start auto';
+        $('auto').classList.remove('primary');
+        $('auto').classList.add('secondary');
+      }
+
+      $('send').addEventListener('click', request);
+      $('auto').addEventListener('click', () => state.autoTimer ? stopAuto() : startAuto());
+      $('reset').addEventListener('click', () => {
+        stopAuto();
+        Object.assign(state, {
+          tokens: state.capacity,
+          sent: 0,
+          allowed: 0,
+          throttled: 0,
+          processed: 0,
+          received: 0,
+          logCount: 0,
+          lastRefill: performance.now()
+        });
+        $('log').innerHTML = '<div class="empty">No traffic yet. Send a request to begin.</div>';
+        $('decision').textContent = 'Waiting';
+        $('decision').style.color = '';
+        $('serviceStatus').textContent = 'Healthy';
+        $('serviceStatus').style.color = '';
+        render();
+      });
+      ['rate', 'capacity', 'interval'].forEach(id => $(id).addEventListener('input', updateSettings));
+      setInterval(() => {
+        refill();
+        render();
+      }, 100);
+      render();
+    })();
+  </script>
+</body>
+</html>
