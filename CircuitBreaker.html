@@ -252,7 +252,7 @@
       [...$("meter").children].forEach((el, i) => el.classList.toggle("on", i < n));
     }
 
-    function stats() {
+    function updateStats() {
       $("sent").textContent = counts.sent;
       $("reached").textContent = counts.reached;
       $("blocked").textContent = counts.blocked;
@@ -297,7 +297,7 @@
     breaker.on("probe", () => log("Probe request sent to the service.", "warn"));
     breaker.on("blocked", () => {
       counts.blocked++;
-      stats();
+      updateStats();
       log("Request blocked. Fallback returned, service not called.", "warn");
     });
 
@@ -308,12 +308,12 @@
     };
     callingService.on("sent", () => {
       counts.sent++;
-      stats();
+      updateStats();
     });
     callingService.on("result", ({result}) => callerResult(...RESULT_UI[result]));
     calledService.on("handled", () => {
       counts.reached++;
-      stats();
+      updateStats();
     });
     calledService.on("degraded", ({degraded}) => {
       const sv = $("svc"), b = $("svcState"), btn = $("toggle");
