@@ -97,21 +97,25 @@
   <script>
     const TICK_MS = 1200;
 
-    // ---- Circuit breaker: pure logic, no DOM. It reports what happens through events. ----
-    const breaker = {
-      threshold: 3,      // consecutive failures before the breaker opens
-      openMs: 6000,      // how long it stays open before allowing a probe
-      state: "closed",   // "closed" | "open" | "half"
-      failures: 0,
-      openUntil: 0,
+    // ---- Shared event helper: adds on(evt, fn) and emit(evt, data) to an object. ----
+    const withEvents = obj => Object.assign(obj, {
       handlers: {},
-
       on(evt, fn) {
         (this.handlers[evt] = this.handlers[evt] || []).push(fn);
       },
       emit(evt, data) {
         (this.handlers[evt] || []).forEach(fn => fn(data || {}));
-      },
+      }
+    });
+
+    // ---- Circuit breaker: pure logic, no DOM. It reports what happens through events. ----
+    const breaker = withEvents({
+      threshold: 3,      // consecutive failures before the breaker opens
+      openMs: 6000,      // how long it stays open before allowing a probe
+      state: "closed",   // "closed" | "open" | "half"
+      failures: 0,
+      openUntil: 0,
+
       remaining() {
         return Math.max(0, this.openUntil - Date.now());
       },
@@ -163,11 +167,47 @@
         }
         return "failure";
       }
-    };
+    });
 
-    // ---- Demo state ----
-    let degraded = false;
-    let sent = 0, reached = 0, blocked = 0, inFlight = false;
+    // ---- Services: logic only, no DOM. Each reports what happens through events. ----
+    const calledService = withEvents({
+      degraded: false,
+      handled: 0,
+
+      setDegraded(value) {
+        this.degraded = value;
+        this.emit("degraded", {degraded: value});
+      },
+
+      // Resolves true when the request succeeds, false when the service is degraded.
+      async handle() {
+        this.handled++;
+        this.emit("handled");
+        return !this.degraded;
+      }
+    });
+
+    const callingService = withEvents({
+      breaker,
+      sent: 0,
+      busy: false,
+
+      // `link` is the transport: outbound(), callRemote() and inbound(result).
+      // callRemote() is what the breaker protects.
+      async send(link) {
+        if (this.busy) return;
+        this.busy = true;
+        this.sent++;
+        this.emit("sent");
+        await link.outbound();
+        const result = await this.breaker.call(link.callRemote);
+        await link.inbound(result);
+        this.emit("result", {result});
+        this.busy = false;
+      }
+    });
+
+    let blocked = 0;
     const $ = id => document.getElementById(id);
     const vertical = () => matchMedia("(max-width:720px)").matches;
 
@@ -216,8 +256,8 @@
     }
 
     function stats() {
-      $("sent").textContent = sent;
-      $("reached").textContent = reached;
+      $("sent").textContent = callingService.sent;
+      $("reached").textContent = calledService.handled;
       $("blocked").textContent = blocked;
     }
 
@@ -228,17 +268,17 @@
       $("callerNote").textContent = note;
     }
 
-    async function callService() {
-      await packet("t2", degraded ? "bad" : "ok", true, 450);
-      reached++;
-      stats();
-      if (degraded) {
-        await packet("t2", "bad", false, 450);
-        return false;
-      }
-      await packet("t2", "ok", false, 450);
-      return true;
-    }
+    // The wires between the boxes: they animate packets and connect the services.
+    const link = {
+      outbound: () => packet("t1", "ok", true, 450),
+      async callRemote() {
+        await packet("t2", calledService.degraded ? "bad" : "ok", true, 450);
+        const ok = await calledService.handle();
+        await packet("t2", ok ? "ok" : "bad", false, 450);
+        return ok;
+      },
+      inbound: result => packet("t1", {blocked: "warn", success: "ok", failure: "bad"}[result], false, 450)
+    };
 
     // ---- UI wiring: the page only listens to breaker events ----
     breaker.on("state", ({state, reason}) => {
@@ -264,32 +304,15 @@
       log("Request blocked. Fallback returned, service not called.", "warn");
     });
 
-    async function tick() {
-      if (inFlight) return;
-      inFlight = true;
-      sent++;
-      stats();
-      await packet("t1", "ok", true, 450);
-
-      const result = await breaker.call(callService);
-
-      if (result === "blocked") {
-        await packet("t1", "warn", false, 450);
-        callerResult("Fallback", "warn", "Last response: cached fallback");
-      }
-      else if (result === "success") {
-        await packet("t1", "ok", false, 450);
-        callerResult("Success", "ok", "Last response: real data");
-      }
-      else {
-        await packet("t1", "bad", false, 450);
-        callerResult("Error", "bad", "Last response: error from service");
-      }
-      inFlight = false;
-    }
-
-    $("toggle").addEventListener("click", () => {
-      degraded = !degraded;
+    const RESULT_UI = {
+      blocked: ["Fallback", "warn", "Last response: cached fallback"],
+      success: ["Success", "ok", "Last response: real data"],
+      failure: ["Error", "bad", "Last response: error from service"]
+    };
+    callingService.on("sent", stats);
+    callingService.on("result", ({result}) => callerResult(...RESULT_UI[result]));
+    calledService.on("handled", stats);
+    calledService.on("degraded", ({degraded}) => {
       const sv = $("svc"), b = $("svcState"), btn = $("toggle");
       sv.className = "box" + (degraded ? " bad" : "");
       b.className = "badge " + (degraded ? "bad" : "ok");
@@ -299,6 +322,12 @@
       btn.className = degraded ? "recover" : "";
       log(degraded ? "Called service is now degraded." : "Called service recovered.", degraded ? "bad" : "ok");
     });
+
+    function tick() {
+      callingService.send(link);
+    }
+
+    $("toggle").addEventListener("click", () => calledService.setDegraded(!calledService.degraded));
 
     setInterval(() => {
       if (breaker.state === "open") {
