@@ -95,8 +95,78 @@
   </main>
 
   <script>
-    const THRESHOLD = 3, OPEN_MS = 6000, TICK_MS = 1200;
-    let degraded = false, state = "closed", failures = 0, openUntil = 0;
+    const TICK_MS = 1200;
+
+    // ---- Circuit breaker: pure logic, no DOM. It reports what happens through events. ----
+    const breaker = {
+      threshold: 3,      // consecutive failures before the breaker opens
+      openMs: 6000,      // how long it stays open before allowing a probe
+      state: "closed",   // "closed" | "open" | "half"
+      failures: 0,
+      openUntil: 0,
+      handlers: {},
+
+      on(evt, fn) {
+        (this.handlers[evt] = this.handlers[evt] || []).push(fn);
+      },
+      emit(evt, data) {
+        (this.handlers[evt] || []).forEach(fn => fn(data || {}));
+      },
+      remaining() {
+        return Math.max(0, this.openUntil - Date.now());
+      },
+
+      setState(state, reason) {
+        this.state = state;
+        this.emit("state", {state, reason});
+      },
+      trip(reason) {
+        this.openUntil = Date.now() + this.openMs;
+        this.setState("open", reason);
+      },
+
+      // Runs `action` (async, resolves true on success) through the breaker.
+      // Returns "success", "failure" or "blocked" (action was not called).
+      async call(action) {
+        if (this.state === "open" && this.remaining() === 0) this.setState("half", "cooldown-over");
+
+        if (this.state === "open") {
+          this.emit("blocked");
+          return "blocked";
+        }
+
+        const probe = this.state === "half";
+        if (probe) this.emit("probe");
+
+        let ok;
+        try {
+          ok = await action();
+        }
+        catch (e) {
+          ok = false;
+        }
+
+        if (ok) {
+          this.failures = 0;
+          this.emit("success", {probe});
+          if (probe) this.setState("closed", "probe-ok");
+          return "success";
+        }
+
+        if (probe) {
+          this.trip("probe-failed");
+        }
+        else {
+          this.failures++;
+          this.emit("failure", {count: this.failures});
+          if (this.failures >= this.threshold) this.trip("threshold");
+        }
+        return "failure";
+      }
+    };
+
+    // ---- Demo state ----
+    let degraded = false;
     let sent = 0, reached = 0, blocked = 0, inFlight = false;
     const $ = id => document.getElementById(id);
     const vertical = () => matchMedia("(max-width:720px)").matches;
@@ -128,7 +198,6 @@
     }
 
     function setBreaker(s) {
-      state = s;
       const cb = $("cb"), b = $("cbState"), n = $("cbNote");
       const map = {
         closed: ["ok", "Closed", "Requests pass through"],
@@ -142,8 +211,8 @@
       n.textContent = note;
     }
 
-    function setMeter() {
-      [...$("meter").children].forEach((el, i) => el.classList.toggle("on", i < failures));
+    function setMeter(n) {
+      [...$("meter").children].forEach((el, i) => el.classList.toggle("on", i < n));
     }
 
     function stats() {
@@ -159,7 +228,7 @@
       $("callerNote").textContent = note;
     }
 
-    async function callService(probe) {
+    async function callService() {
       await packet("t2", degraded ? "bad" : "ok", true, 450);
       reached++;
       stats();
@@ -171,6 +240,30 @@
       return true;
     }
 
+    // ---- UI wiring: the page only listens to breaker events ----
+    breaker.on("state", ({state, reason}) => {
+      setBreaker(state);
+      const secs = breaker.openMs / 1000;
+      if (state === "half") log("Cool-down over. Breaker is half-open.", "warn");
+      else if (state === "closed") log("Probe succeeded. Breaker closed.", "ok");
+      else if (reason === "probe-failed") log("Probe failed. Breaker open again for " + secs + "s.", "bad");
+      else log("Failure threshold reached. Breaker open for " + secs + "s.", "bad");
+    });
+    breaker.on("failure", ({count}) => {
+      setMeter(count);
+      log("Request failed (" + count + "/" + breaker.threshold + ").", "bad");
+    });
+    breaker.on("success", ({probe}) => {
+      setMeter(0);
+      if (!probe) log("Request succeeded.", "ok");
+    });
+    breaker.on("probe", () => log("Probe request sent to the service.", "warn"));
+    breaker.on("blocked", () => {
+      blocked++;
+      stats();
+      log("Request blocked. Fallback returned, service not called.", "warn");
+    });
+
     async function tick() {
       if (inFlight) return;
       inFlight = true;
@@ -178,52 +271,19 @@
       stats();
       await packet("t1", "ok", true, 450);
 
-      if (state === "open" && Date.now() >= openUntil) {
-        setBreaker("half");
-        log("Cool-down over. Breaker is half-open.", "warn");
-      }
+      const result = await breaker.call(callService);
 
-      if (state === "open") {
-        blocked++;
-        stats();
-        log("Request blocked. Fallback returned, service not called.", "warn");
+      if (result === "blocked") {
         await packet("t1", "warn", false, 450);
         callerResult("Fallback", "warn", "Last response: cached fallback");
       }
+      else if (result === "success") {
+        await packet("t1", "ok", false, 450);
+        callerResult("Success", "ok", "Last response: real data");
+      }
       else {
-        const probe = state === "half";
-        if (probe) log("Probe request sent to the service.", "warn");
-        const okRes = await callService(probe);
-        if (okRes) {
-          failures = 0;
-          setMeter();
-          if (probe) {
-            setBreaker("closed");
-            log("Probe succeeded. Breaker closed.", "ok");
-          }
-          else log("Request succeeded.", "ok");
-          await packet("t1", "ok", false, 450);
-          callerResult("Success", "ok", "Last response: real data");
-        }
-        else {
-          if (probe) {
-            openUntil = Date.now() + OPEN_MS;
-            setBreaker("open");
-            log("Probe failed. Breaker open again for " + OPEN_MS / 1000 + "s.", "bad");
-          }
-          else {
-            failures++;
-            setMeter();
-            log("Request failed (" + failures + "/" + THRESHOLD + ").", "bad");
-            if (failures >= THRESHOLD) {
-              openUntil = Date.now() + OPEN_MS;
-              setBreaker("open");
-              log("Failure threshold reached. Breaker open for " + OPEN_MS / 1000 + "s.", "bad");
-            }
-          }
-          await packet("t1", "bad", false, 450);
-          callerResult("Error", "bad", "Last response: error from service");
-        }
+        await packet("t1", "bad", false, 450);
+        callerResult("Error", "bad", "Last response: error from service");
       }
       inFlight = false;
     }
@@ -241,8 +301,8 @@
     });
 
     setInterval(() => {
-      if (state === "open") {
-        const s = Math.max(0, Math.ceil((openUntil - Date.now()) / 1000));
+      if (breaker.state === "open") {
+        const s = Math.ceil(breaker.remaining() / 1000);
         $("cbNote").textContent = "Blocking calls, probe in " + s + "s";
       }
     }, 250);
