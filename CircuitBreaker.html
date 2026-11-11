@@ -172,7 +172,6 @@
     // ---- Services: logic only, no DOM. Each reports what happens through events. ----
     const calledService = withEvents({
       degraded: false,
-      handled: 0,
 
       setDegraded(value) {
         this.degraded = value;
@@ -181,7 +180,6 @@
 
       // Resolves true when the request succeeds, false when the service is degraded.
       async handle() {
-        this.handled++;
         this.emit("handled");
         return !this.degraded;
       }
@@ -189,7 +187,6 @@
 
     const callingService = withEvents({
       breaker,
-      sent: 0,
       busy: false,
 
       // `link` is the transport: outbound(), callRemote() and inbound(result).
@@ -197,7 +194,6 @@
       async send(link) {
         if (this.busy) return;
         this.busy = true;
-        this.sent++;
         this.emit("sent");
         await link.outbound();
         const result = await this.breaker.call(link.callRemote);
@@ -207,7 +203,8 @@
       }
     });
 
-    let blocked = 0;
+    // ---- Demo counters: UI only, shown under the boxes ----
+    const counts = {sent: 0, reached: 0, blocked: 0};
     const $ = id => document.getElementById(id);
     const vertical = () => matchMedia("(max-width:720px)").matches;
 
@@ -256,9 +253,9 @@
     }
 
     function stats() {
-      $("sent").textContent = callingService.sent;
-      $("reached").textContent = calledService.handled;
-      $("blocked").textContent = blocked;
+      $("sent").textContent = counts.sent;
+      $("reached").textContent = counts.reached;
+      $("blocked").textContent = counts.blocked;
     }
 
     function callerResult(text, cls, note) {
@@ -299,7 +296,7 @@
     });
     breaker.on("probe", () => log("Probe request sent to the service.", "warn"));
     breaker.on("blocked", () => {
-      blocked++;
+      counts.blocked++;
       stats();
       log("Request blocked. Fallback returned, service not called.", "warn");
     });
@@ -309,9 +306,15 @@
       success: ["Success", "ok", "Last response: real data"],
       failure: ["Error", "bad", "Last response: error from service"]
     };
-    callingService.on("sent", stats);
+    callingService.on("sent", () => {
+      counts.sent++;
+      stats();
+    });
     callingService.on("result", ({result}) => callerResult(...RESULT_UI[result]));
-    calledService.on("handled", stats);
+    calledService.on("handled", () => {
+      counts.reached++;
+      stats();
+    });
     calledService.on("degraded", ({degraded}) => {
       const sv = $("svc"), b = $("svcState"), btn = $("toggle");
       sv.className = "box" + (degraded ? " bad" : "");
